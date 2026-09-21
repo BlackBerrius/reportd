@@ -14,3 +14,5 @@
 /migrate
 .DS_Store
 .env
+gcp-service-account.json
+**/postgres/pgdata/

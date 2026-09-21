@@ -111,6 +111,20 @@ reportd will be reachable at `http://localhost:8080`. Put it behind a reverse pr
 
 To use SQLite instead of Postgres, drop the `db` service and `depends_on`, set `REPORTD_DATABASE_URL: sqlite:///data/reportd.db`, and mount a volume at `/data` for persistence.
 
+Ready-to-copy stacks (Traefik on a shared host, BigQuery, or local macOS) are under [`deploy/`](deploy/README.md):
+
+| Stack | Use |
+|-------|-----|
+| [`deploy/external-no-gcp`](deploy/external-no-gcp/) | Traefik on a shared external host; SQL dashboard only (dummy BigQuery env) |
+| [`deploy/external-bigquery`](deploy/external-bigquery/) | Same Traefik/networks, plus a GCP service-account key |
+| [`deploy/local-macos`](deploy/local-macos/) | `localhost:8080`, no Traefik; GHCR image or `docker compose up --build` |
+
+```bash
+cd deploy/local-macos   # or another stack directory
+cp .env.example .env
+docker compose up -d
+```
+
 ### Local development
 
 ```bash

@@ -1,0 +1,64 @@
+services:
+  reportd:
+    image: ${REPORTD_IMAGE:-ghcr.io/icco/reportd:main}
+    restart: unless-stopped
+    expose:
+      - "8080"
+    environment:
+      REPORTD_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}?sslmode=disable
+      REPORTD_PROJECT: ${REPORTD_PROJECT}
+      REPORTD_DATASET: ${REPORTD_DATASET}
+      REPORTD_ANALYTICS_TABLE: ${REPORTD_ANALYTICS_TABLE}
+      REPORTD_REPORTS_TABLE: ${REPORTD_REPORTS_TABLE}
+      REPORTD_REPORTS_V2_TABLE: ${REPORTD_REPORTS_V2_TABLE}
+    depends_on:
+      db:
+        condition: service_healthy
+    labels:
+      - traefik.enable=true
+      - traefik.docker.network=ext_traefik
+
+      - traefik.http.routers.${ENV_NAME}-http.entrypoints=webinsecure
+      - traefik.http.routers.${ENV_NAME}-http.rule=Host(`${ENV_NAME}.${ENV_DOMAIN}`)
+      - traefik.http.middlewares.${ENV_NAME}-https-redirect.redirectscheme.scheme=https
+      - traefik.http.middlewares.${ENV_NAME}-https-redirect.redirectscheme.permanent=true
+      - traefik.http.routers.${ENV_NAME}-http.middlewares=${ENV_NAME}-https-redirect@docker
+
+      - traefik.http.routers.${ENV_NAME}-https.entrypoints=websecure
+      - traefik.http.routers.${ENV_NAME}-https.rule=Host(`${ENV_NAME}.${ENV_DOMAIN}`)
+      - traefik.http.routers.${ENV_NAME}-https.tls=true
+      - traefik.http.routers.${ENV_NAME}-https.tls.certresolver=letsencrypt
+
+      - traefik.http.services.${ENV_NAME}.loadbalancer.server.port=8080
+    networks:
+      - ext_traefik
+      - brx
+
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./postgres/pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    networks:
+      - brx
+      - inbound
+    expose:
+      - "5432"
+
+networks:
+  brx:
+    driver: bridge
+    name: ${ENV_NAME}
+  inbound:
+    external: true
+  ext_traefik:
+    external: true

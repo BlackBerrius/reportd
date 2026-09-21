@@ -1,0 +1,37 @@
+services:
+  reportd:
+    image: ${REPORTD_IMAGE:-ghcr.io/icco/reportd:main}
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      REPORTD_DATABASE_URL: postgresql://${POSTGRES_USER:-reportd}:${POSTGRES_PASSWORD:-reportd}@db:5432/${POSTGRES_DB:-reportd}?sslmode=disable
+      REPORTD_PROJECT: ${REPORTD_PROJECT:-local}
+      REPORTD_DATASET: ${REPORTD_DATASET:-local}
+      REPORTD_ANALYTICS_TABLE: ${REPORTD_ANALYTICS_TABLE:-analytics}
+      REPORTD_REPORTS_TABLE: ${REPORTD_REPORTS_TABLE:-reports}
+      REPORTD_REPORTS_V2_TABLE: ${REPORTD_REPORTS_V2_TABLE:-reporting}
+    depends_on:
+      db:
+        condition: service_healthy
+
+  db:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-reportd}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-reportd}
+      POSTGRES_DB: ${POSTGRES_DB:-reportd}
+    volumes:
+      - reportd-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-reportd} -d ${POSTGRES_DB:-reportd}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  reportd-pgdata:
