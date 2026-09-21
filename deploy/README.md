@@ -62,3 +62,10 @@ docker compose up -d --build
 ```
 
 Postgres uses a named volume (`reportd-pgdata`). Port 5432 is not published, so a local Postgres on the host is not occupied.
+
+SQLite instead of Postgres (no Postgres service; database file on named volume `reportd-sqlite` at `/data`, writable by the app user):
+
+```bash
+docker compose -f docker-compose.sqlite.yml up -d
+docker compose -f docker-compose.sqlite.yml up -d --build
+```

@@ -117,7 +117,7 @@ Ready-to-copy stacks (Traefik on a shared host, BigQuery, or local macOS) are un
 |-------|-----|
 | [`deploy/external-no-gcp`](deploy/external-no-gcp/) | Traefik on a shared external host; SQL dashboard only (dummy BigQuery env) |
 | [`deploy/external-bigquery`](deploy/external-bigquery/) | Same Traefik/networks, plus a GCP service-account key |
-| [`deploy/local-macos`](deploy/local-macos/) | `localhost:8080`, no Traefik; GHCR image or `docker compose up --build` |
+| [`deploy/local-macos`](deploy/local-macos/) | `localhost:8080`, no Traefik; GHCR image or `docker compose up --build`; SQLite: `docker-compose.sqlite.yml` |
 
 ```bash
 cd deploy/local-macos   # or another stack directory
