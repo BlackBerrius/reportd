@@ -476,12 +476,18 @@ func TestPostReportingHandler(t *testing.T) {
 		t.Fatalf("valid: status = %d, want 204, body=%s", rr.Code, rr.Body.String())
 	}
 
+	arrayBody := `[{"type":"csp-violation","url":"https://example.com/","body":{"documentURL":"https://example.com/","blockedURL":"https://evil.com/x.js","effectiveDirective":"script-src-elem"}}]`
+	rr = do(t, h, http.MethodPost, "/reporting/svc", strings.NewReader(arrayBody), "application/reports+json")
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("browser array: status = %d, want 204, body=%s", rr.Code, rr.Body.String())
+	}
+
 	var count int64
 	if err := pgDB.Model(&db.SecurityReportEntry{}).Where("service = ?", "svc").Count(&count).Error; err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if count != 1 {
-		t.Errorf("expected 1 security report row, got %d", count)
+	if count != 2 {
+		t.Errorf("expected 2 security report rows, got %d", count)
 	}
 
 	if !waitForSignal(rec.doneSecurityRpt) {

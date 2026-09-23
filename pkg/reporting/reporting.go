@@ -5,11 +5,38 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"strings"
 	"time"
 
 	"cloud.google.com/go/bigquery"
 	"cloud.google.com/go/civil"
 )
+
+// #region agent log
+func agentDebugLog(hypothesisID, location, message string, data map[string]any) {
+	f, err := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	payload := map[string]any{
+		"sessionId":    "a5526c",
+		"runId":        "ingest-debug",
+		"hypothesisId": hypothesisID,
+		"location":     location,
+		"message":      message,
+		"data":         data,
+		"timestamp":    time.Now().UnixMilli(),
+	}
+	b, err := json.Marshal(payload)
+	if err != nil {
+		return
+	}
+	_, _ = f.Write(append(b, '\n'))
+}
+
+// #endregion
 
 // CSPReport is a Content-Security-Policy violation.
 type CSPReport struct {
@@ -30,6 +57,48 @@ type CSPReportBody struct {
 	LineNumber         int32  `json:"line_number,omitempty"`
 	ColumnNumber       int32  `json:"column_number,omitempty"`
 	ScriptSample       string `json:"script_sample,omitempty"`
+}
+
+// UnmarshalJSON accepts both Reporting API camelCase (documentURL) and
+// legacy snake_case (document_uri) field names used in older clients/tests.
+func (b *CSPReportBody) UnmarshalJSON(data []byte) error {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	pick := func(keys ...string) string {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok {
+				var s string
+				if err := json.Unmarshal(v, &s); err == nil {
+					return s
+				}
+			}
+		}
+		return ""
+	}
+	pickInt := func(keys ...string) int32 {
+		for _, k := range keys {
+			if v, ok := raw[k]; ok {
+				var n int32
+				if err := json.Unmarshal(v, &n); err == nil {
+					return n
+				}
+			}
+		}
+		return 0
+	}
+	b.DocumentURI = pick("documentURL", "document_uri")
+	b.Referrer = pick("referrer")
+	b.BlockedURI = pick("blockedURL", "blocked_uri")
+	b.ViolatedDirective = pick("violatedDirective", "violated_directive")
+	b.EffectiveDirective = pick("effectiveDirective", "effective_directive")
+	b.OriginalPolicy = pick("originalPolicy", "original_policy")
+	b.SourceFile = pick("sourceFile", "source_file")
+	b.LineNumber = pickInt("lineNumber", "line_number")
+	b.ColumnNumber = pickInt("columnNumber", "column_number")
+	b.ScriptSample = pick("sample", "script_sample")
+	return nil
 }
 
 // DeprecationReport signals use of a deprecated browser API.
@@ -180,10 +249,36 @@ type SecurityReport struct {
 	Service bigquery.NullString
 }
 
-// ParseReport decodes a Reporting API v1 payload into a SecurityReport.
-// The "type" field selects which typed pointer is populated; unknown
-// types are preserved in RawJSON.
+// ParseReport decodes a single Reporting API v1 report object into a
+// SecurityReport. The "type" field selects which typed pointer is
+// populated; unknown types are preserved in RawJSON.
+//
+// Browsers send a JSON array of reports; use ParseReports for wire payloads.
 func ParseReport(data, srv string) (*SecurityReport, error) {
+	// #region agent log
+	trimmed := strings.TrimSpace(data)
+	startsArray := strings.HasPrefix(trimmed, "[")
+	hasCamelDocURL := strings.Contains(data, `"documentURL"`)
+	hasSnakeDocURI := strings.Contains(data, `"document_uri"`)
+	agentDebugLog("A", "reporting.go:ParseReport:entry", "ParseReport input shape", map[string]any{
+		"service":             srv,
+		"len":                 len(data),
+		"startsWithArray":     startsArray,
+		"hasCamelDocumentURL": hasCamelDocURL,
+		"hasSnakeDocumentURI": hasSnakeDocURI,
+		"prefix":              trimmed[:min(40, len(trimmed))],
+	})
+	// #endregion
+
+	if startsArray {
+		// #region agent log
+		agentDebugLog("A", "reporting.go:ParseReport:arrayRejected", "single-object ParseReport got array; use ParseReports", map[string]any{
+			"service": srv,
+		})
+		// #endregion
+		return nil, fmt.Errorf("expected a single report object, got JSON array")
+	}
+
 	sr := &SecurityReport{
 		Time:    bigquery.NullDateTime{DateTime: civil.DateTimeOf(time.Now()), Valid: true},
 		Service: bigquery.NullString{StringVal: srv, Valid: true},
@@ -194,6 +289,13 @@ func ParseReport(data, srv string) (*SecurityReport, error) {
 	}{}
 
 	if err := json.Unmarshal([]byte(data), &tmp); err != nil {
+		// #region agent log
+		agentDebugLog("A", "reporting.go:ParseReport:unmarshalType", "type-envelope unmarshal failed", map[string]any{
+			"service":         srv,
+			"error":           err.Error(),
+			"startsWithArray": startsArray,
+		})
+		// #endregion
 		return nil, err
 	}
 
@@ -250,7 +352,57 @@ func ParseReport(data, srv string) (*SecurityReport, error) {
 		// Unknown type: preserved in RawJSON.
 	}
 
+	// #region agent log
+	cspDoc := ""
+	if sr.CSP != nil {
+		cspDoc = sr.CSP.Body.DocumentURI
+	}
+	agentDebugLog("B", "reporting.go:ParseReport:ok", "ParseReport succeeded", map[string]any{
+		"service": srv, "type": tmp.Type, "cspDocumentURI": cspDoc,
+	})
+	// #endregion
+
 	return sr, nil
+}
+
+// ParseReports decodes a Reporting API v1 wire payload. Browsers send a
+// JSON array of report objects; a single object is also accepted.
+func ParseReports(data, srv string) ([]*SecurityReport, error) {
+	trimmed := strings.TrimSpace(data)
+	// #region agent log
+	agentDebugLog("A", "reporting.go:ParseReports:entry", "ParseReports input shape", map[string]any{
+		"service":         srv,
+		"len":             len(data),
+		"startsWithArray": strings.HasPrefix(trimmed, "["),
+	})
+	// #endregion
+
+	if strings.HasPrefix(trimmed, "[") {
+		var items []json.RawMessage
+		if err := json.Unmarshal([]byte(data), &items); err != nil {
+			return nil, err
+		}
+		out := make([]*SecurityReport, 0, len(items))
+		for _, item := range items {
+			sr, err := ParseReport(string(item), srv)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sr)
+		}
+		// #region agent log
+		agentDebugLog("A", "reporting.go:ParseReports:arrayOK", "parsed report array", map[string]any{
+			"service": srv, "count": len(out),
+		})
+		// #endregion
+		return out, nil
+	}
+
+	sr, err := ParseReport(data, srv)
+	if err != nil {
+		return nil, err
+	}
+	return []*SecurityReport{sr}, nil
 }
 
 // ParseLegacyCSPReport decodes a legacy application/csp-report payload

@@ -364,7 +364,7 @@ func TestParseReportEdgeCases(t *testing.T) {
 			name:    "JSON array",
 			body:    `[{"type":"csp-violation"}]`,
 			service: "test",
-			wantErr: true,
+			wantErr: true, // ParseReport is single-object; arrays go through ParseReports
 		},
 		{
 			name:    "just a string",

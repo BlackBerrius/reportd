@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -579,33 +580,92 @@ func postReportingHandler(pgDB *gorm.DB, writeBQ securityReportBQWriter) http.Ha
 		bodyStr := buf.String()
 
 		l.Infow("reporting received", "content-type", contentType, "service", service, "user-agent", r.UserAgent())
-		var reports *reporting.SecurityReport
+		// #region agent log
+		{
+			trimmed := strings.TrimSpace(bodyStr)
+			f, ferr := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if ferr == nil {
+				payload, _ := json.Marshal(map[string]any{
+					"sessionId": "a5526c", "runId": "ingest-debug", "hypothesisId": "A",
+					"location": "main.go:postReportingHandler", "message": "reporting POST received",
+					"data": map[string]any{
+						"service": service, "media": media, "ua": r.UserAgent(),
+						"bodyLen": len(bodyStr), "startsWithArray": strings.HasPrefix(trimmed, "["),
+						"bodyPrefix": trimmed[:min(60, len(trimmed))],
+					},
+					"timestamp": time.Now().UnixMilli(),
+				})
+				_, _ = f.Write(append(payload, '\n'))
+				_ = f.Close()
+			}
+		}
+		// #endregion
+		var reports []*reporting.SecurityReport
 		if media == "application/csp-report" {
-			reports, err = reporting.ParseLegacyCSPReport(bodyStr, service)
+			one, parseErr := reporting.ParseLegacyCSPReport(bodyStr, service)
+			err = parseErr
+			if err == nil {
+				reports = []*reporting.SecurityReport{one}
+			}
 		} else {
-			reports, err = reporting.ParseReport(bodyStr, service)
+			reports, err = reporting.ParseReports(bodyStr, service)
 		}
 		if err != nil {
+			// #region agent log
+			{
+				f, ferr := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+				if ferr == nil {
+					payload, _ := json.Marshal(map[string]any{
+						"sessionId": "a5526c", "runId": "ingest-debug", "hypothesisId": "A",
+						"location": "main.go:postReportingHandler:parseErr", "message": "reporting parse failed",
+						"data":      map[string]any{"service": service, "media": media, "error": err.Error()},
+						"timestamp": time.Now().UnixMilli(),
+					})
+					_, _ = f.Write(append(payload, '\n'))
+					_ = f.Close()
+				}
+			}
+			// #endregion
 			l.Errorw("error on parsing reporting data", zap.Error(err), "service", service, "content-type", contentType, "body", bodyStr)
 			http.Error(w, "uploading error", 500)
 			return
 		}
 
-		l.Infow("reporting parsed", "reports", reports, "service", service, "content-type", contentType, "user-agent", r.UserAgent())
+		l.Infow("reporting parsed", "count", len(reports), "service", service, "content-type", contentType, "user-agent", r.UserAgent())
 
-		entry := db.SecurityReportEntryFromReport(reports)
 		writeCtx, cancel := ingestContext(ctx)
 		defer cancel()
-		if err := pgDB.WithContext(writeCtx).Create(entry).Error; err != nil {
-			l.Errorw("error writing reporting to postgres", zap.Error(err), "service", service)
-			http.Error(w, "storage error", 500)
-			return
+		for _, report := range reports {
+			entry := db.SecurityReportEntryFromReport(report)
+			if err := pgDB.WithContext(writeCtx).Create(entry).Error; err != nil {
+				l.Errorw("error writing reporting to postgres", zap.Error(err), "service", service)
+				http.Error(w, "storage error", 500)
+				return
+			}
 		}
+
+		// #region agent log
+		{
+			f, ferr := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+			if ferr == nil {
+				payload, _ := json.Marshal(map[string]any{
+					"sessionId": "a5526c", "runId": "post-fix", "hypothesisId": "A",
+					"location": "main.go:postReportingHandler:stored", "message": "reporting stored",
+					"data":      map[string]any{"service": service, "count": len(reports)},
+					"timestamp": time.Now().UnixMilli(),
+				})
+				_, _ = f.Write(append(payload, '\n'))
+				_ = f.Close()
+			}
+		}
+		// #endregion
 
 		w.WriteHeader(http.StatusNoContent)
 
 		if writeBQ != nil {
-			go writeBQ(context.WithoutCancel(ctx), reports)
+			for _, report := range reports {
+				go writeBQ(context.WithoutCancel(ctx), report)
+			}
 		}
 	}
 }
