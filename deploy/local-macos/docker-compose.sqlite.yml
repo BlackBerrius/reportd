@@ -7,7 +7,7 @@ services:
     command: ["chown", "1001:1001", "/data"]
 
   reportd:
-    image: ${REPORTD_IMAGE:-ghcr.io/icco/reportd:main}
+    image: ${REPORTD_IMAGE:-ghcr.io/blackberrius/reportd:latest}
     build:
       context: ../..
       dockerfile: Dockerfile

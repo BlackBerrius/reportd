@@ -1,6 +1,6 @@
 services:
   reportd:
-    image: ${REPORTD_IMAGE:-ghcr.io/icco/reportd:main}
+    image: ${REPORTD_IMAGE:-ghcr.io/blackberrius/reportd:latest}
     restart: unless-stopped
     expose:
       - "8080"

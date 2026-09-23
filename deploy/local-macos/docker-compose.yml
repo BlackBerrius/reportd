@@ -1,6 +1,6 @@
 services:
   reportd:
-    image: ${REPORTD_IMAGE:-ghcr.io/icco/reportd:main}
+    image: ${REPORTD_IMAGE:-ghcr.io/blackberrius/reportd:latest}
     build:
       context: ../..
       dockerfile: Dockerfile

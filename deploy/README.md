@@ -10,11 +10,13 @@ docker compose up -d
 
 | Directory | Where | Traefik | BigQuery | Image |
 |-----------|--------|---------|----------|--------|
-| [external-no-gcp](external-no-gcp/) | Shared external dev (same pattern as other env stacks) | Yes (`ext_traefik`) | Dummy `REPORTD_*` values; BQ errors in logs are expected | `ghcr.io/icco/reportd:main` |
-| [external-bigquery](external-bigquery/) | Same host/networks | Yes | Real GCP project, dataset, three tables, service-account JSON | `ghcr.io/icco/reportd:main` |
-| [local-macos](local-macos/) | Laptop | No | Dummy values | GHCR **or** local `Dockerfile` |
+| [external-no-gcp](external-no-gcp/) | Shared external dev (same pattern as other env stacks) | Yes (`ext_traefik`) | Dummy `REPORTD_*` values; BQ errors in logs are expected | `ghcr.io/blackberrius/reportd:latest` |
+| [external-bigquery](external-bigquery/) | Same host/networks | Yes | Real GCP project, dataset, three tables, service-account JSON | `ghcr.io/blackberrius/reportd:latest` |
+| [local-macos](local-macos/) | Laptop | No | Dummy values | Fork GHCR **or** local `Dockerfile` |
 
 Health check: `GET /healthz`.
+
+CI publishes multi-arch images from `develop` (`:develop` and `:latest`) and `main` (`:main`). Stacks default to `ghcr.io/blackberrius/reportd:latest`. After the first successful workflow run, make the package public (or grant pull access) under the repo's Packages settings if hosts need to pull without auth.
 
 Browser Reporting API endpoints must be served over HTTPS. On the external stacks Traefik terminates TLS. On macOS use `http://localhost:8080` only for the dashboard and local tests.
 

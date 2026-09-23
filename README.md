@@ -48,6 +48,10 @@ reportd is configured via environment variables (prefix `REPORTD_`) or command-l
 
 ### Docker
 
+Images are published from `develop` and `main` to GHCR. `:latest` tracks `develop`:
+
+`ghcr.io/blackberrius/reportd:latest`
+
 ```bash
 docker run -p 8080:8080 \
   -e REPORTD_DATABASE_URL=postgres://user:pass@host/reportd \
@@ -58,72 +62,30 @@ docker run -p 8080:8080 \
   -e REPORTD_REPORTS_V2_TABLE=reports_v2 \
   -v /path/to/gcp-service-account.json:/creds.json:ro \
   -e GOOGLE_APPLICATION_CREDENTIALS=/creds.json \
-  ghcr.io/icco/reportd
+  ghcr.io/blackberrius/reportd:latest
 ```
 
 ### Docker Compose (self-hosting)
 
-The example below runs reportd with its own Postgres database in a single `docker compose up -d`. BigQuery is required for long-term analytics, so you'll also need a GCP project, a dataset, three tables (analytics, reports, reporting), and a service account JSON key with write access. For SQLite-only usage (no Postgres container), see the note below.
-
-Save this as `docker-compose.yml`:
-
-```yaml
-services:
-  reportd:
-    image: ghcr.io/icco/reportd:main
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    environment:
-      REPORTD_DATABASE_URL: postgresql://reportd:reportd@db:5432/reportd?sslmode=disable
-      REPORTD_PROJECT: my-gcp-project
-      REPORTD_DATASET: reportd
-      REPORTD_ANALYTICS_TABLE: analytics
-      REPORTD_REPORTS_TABLE: reports
-      REPORTD_REPORTS_V2_TABLE: reporting
-      GOOGLE_APPLICATION_CREDENTIALS: /creds.json
-    volumes:
-      - ./gcp-service-account.json:/creds.json:ro
-    depends_on:
-      - db
-
-  db:
-    image: postgres:17
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: reportd
-      POSTGRES_PASSWORD: reportd
-      POSTGRES_DB: reportd
-    volumes:
-      - reportd-pgdata:/var/lib/postgresql/data
-
-volumes:
-  reportd-pgdata:
-```
-
-Then put your GCP service account key next to it as `gcp-service-account.json` and run:
-
-```bash
-docker compose up -d
-```
-
-reportd will be reachable at `http://localhost:8080`. Put it behind a reverse proxy (Caddy, nginx, Traefik) to expose it on a public hostname over HTTPS — browser reporting endpoints must be HTTPS.
-
-To use SQLite instead of Postgres, drop the `db` service and `depends_on`, set `REPORTD_DATABASE_URL: sqlite:///data/reportd.db`, and mount a volume at `/data` for persistence.
-
-Ready-to-copy stacks (Traefik on a shared host, BigQuery, or local macOS) are under [`deploy/`](deploy/README.md):
+Ready-to-copy stacks live under [`deploy/`](deploy/README.md):
 
 | Stack | Use |
 |-------|-----|
 | [`deploy/external-no-gcp`](deploy/external-no-gcp/) | Traefik on a shared external host; SQL dashboard only (dummy BigQuery env) |
 | [`deploy/external-bigquery`](deploy/external-bigquery/) | Same Traefik/networks, plus a GCP service-account key |
-| [`deploy/local-macos`](deploy/local-macos/) | `localhost:8080`, no Traefik; GHCR image or `docker compose up --build`; SQLite: `docker-compose.sqlite.yml` |
+| [`deploy/local-macos`](deploy/local-macos/) | `localhost:8080`, no Traefik; fork GHCR image or `docker compose up --build` |
 
 ```bash
 cd deploy/local-macos   # or another stack directory
 cp .env.example .env
+# REPORTD_IMAGE defaults to ghcr.io/blackberrius/reportd:latest
+docker compose pull
 docker compose up -d
 ```
+
+On a public hostname, terminate TLS (the external stacks expect Traefik). Browser reporting endpoints must be HTTPS.
+
+To use SQLite instead of Postgres on macOS, see `deploy/local-macos/docker-compose.sqlite.yml`.
 
 ### Local development
 

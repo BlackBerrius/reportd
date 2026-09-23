@@ -16,3 +16,4 @@
 .env
 gcp-service-account.json
 **/postgres/pgdata/
+*.log
