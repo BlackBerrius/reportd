@@ -83,6 +83,7 @@ func main() {
 	rTable := fs.String("reports_table", "", "The bigquery table to upload reports to.")
 	rv2Table := fs.String("reports_v2_table", "", "The bigquery table to upload reports to.")
 	databaseURL := fs.String("database_url", "", "Database connection string (e.g. postgres://user:pass@host/reportd or sqlite:///tmp/reportd.db).")
+	publicURL := fs.String("public_url", "", "Absolute base URL this instance is reachable at (e.g. https://reportd.example.com). Optional: same-origin relative URLs are used when unset.")
 	if err := ff.Parse(fs, os.Args[1:], ff.WithEnvVarPrefix("REPORTD")); err != nil {
 		log.Fatalw("error parsing flags", zap.Error(err))
 	}
@@ -167,7 +168,7 @@ func main() {
 		}
 	}
 
-	r := newRouter(pgDB, writeReport, writeAnalytics, writeSecurityReport)
+	r := newRouter(pgDB, *publicURL, writeReport, writeAnalytics, writeSecurityReport)
 	r.Method(http.MethodGet, "/metrics", promhttp.HandlerFor(registry, promhttp.HandlerOpts{}))
 
 	handler := otelhttp.NewHandler(r, serverName,
@@ -208,9 +209,19 @@ func main() {
 	log.Infow("Server stopped")
 }
 
+// publicEndpoint resolves path against the configured public base URL. An
+// empty base yields a same-origin relative URL, which is what every
+// deployment needs unless it fronts reportd under a different hostname.
+func publicEndpoint(base, path string) string {
+	if base == "" {
+		return path
+	}
+	return strings.TrimRight(base, "/") + path
+}
+
 // newRouter builds the chi router shared by main() and the handler tests;
 // /metrics is mounted by main() because it owns the prometheus registry.
-func newRouter(pgDB *gorm.DB, writeReport reportToBQWriter, writeAnalytics analyticsBQWriter, writeSecurityReport securityReportBQWriter) *chi.Mux {
+func newRouter(pgDB *gorm.DB, publicURL string, writeReport reportToBQWriter, writeAnalytics analyticsBQWriter, writeSecurityReport securityReportBQWriter) *chi.Mux {
 	r := chi.NewRouter()
 	r.Use(logging.Middleware(log.Desugar()))
 	r.Use(routeTag)
@@ -229,10 +240,14 @@ func newRouter(pgDB *gorm.DB, writeReport reportToBQWriter, writeAnalytics analy
 
 	r.Use(middleware.Timeout(30 * time.Second))
 
+	reportTo := fmt.Sprintf(`{"group":"default","max_age":10886400,"endpoints":[{"url":%q}]}`,
+		publicEndpoint(publicURL, "/report/"+serverName))
+	reportingEndpoints := fmt.Sprintf(`default=%q`, publicEndpoint(publicURL, "/reporting/"+serverName))
+
 	r.Use(func(h http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			w.Header().Set("report-to", `{"group":"default","max_age":10886400,"endpoints":[{"url":"https://reportd.natwelch.com/report/reportd"}]}`)
-			w.Header().Set("reporting-endpoints", `default="https://reportd.natwelch.com/reporting/reportd"`)
+			w.Header().Set("report-to", reportTo)
+			w.Header().Set("reporting-endpoints", reportingEndpoints)
 
 			h.ServeHTTP(w, r)
 		})
@@ -263,8 +278,10 @@ func newRouter(pgDB *gorm.DB, writeReport reportToBQWriter, writeAnalytics analy
 		w.WriteHeader(http.StatusNoContent)
 	})
 
-	r.Get("/", indexHandler(re, pgDB))
-	r.Get("/view/{service}", viewHandler(re))
+	analyticsEndpoint := publicEndpoint(publicURL, "/analytics/"+serverName)
+
+	r.Get("/", indexHandler(re, pgDB, analyticsEndpoint))
+	r.Get("/view/{service}", viewHandler(re, analyticsEndpoint))
 	r.Get("/healthz", healthzHandler())
 
 	r.Options("/report/{service}", corsPreflightHandler())
@@ -285,7 +302,7 @@ func newRouter(pgDB *gorm.DB, writeReport reportToBQWriter, writeAnalytics analy
 	return r
 }
 
-func indexHandler(re *render.Render, pgDB *gorm.DB) http.HandlerFunc {
+func indexHandler(re *render.Render, pgDB *gorm.DB, analyticsEndpoint string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
 		l := logging.FromContext(ctx)
@@ -306,11 +323,13 @@ func indexHandler(re *render.Render, pgDB *gorm.DB) http.HandlerFunc {
 		healthJSON, _ := json.Marshal(health)
 
 		if err := re.HTML(w, http.StatusOK, "index", struct {
-			Services   []string
-			HealthJSON string
+			Services          []string
+			HealthJSON        string
+			AnalyticsEndpoint string
 		}{
-			Services:   services,
-			HealthJSON: string(healthJSON),
+			Services:          services,
+			HealthJSON:        string(healthJSON),
+			AnalyticsEndpoint: analyticsEndpoint,
 		}); err != nil {
 			l.Errorw("error rendering index", zap.Error(err))
 			http.Error(w, "could not render index", 500)
@@ -319,7 +338,7 @@ func indexHandler(re *render.Render, pgDB *gorm.DB) http.HandlerFunc {
 	}
 }
 
-func viewHandler(re *render.Render) http.HandlerFunc {
+func viewHandler(re *render.Render, analyticsEndpoint string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		l := logging.FromContext(r.Context())
 		service := chi.URLParam(r, "service")
@@ -331,9 +350,11 @@ func viewHandler(re *render.Render) http.HandlerFunc {
 		}
 
 		if err := re.HTML(w, http.StatusOK, "view", struct {
-			Service string
+			Service           string
+			AnalyticsEndpoint string
 		}{
-			Service: service,
+			Service:           service,
+			AnalyticsEndpoint: analyticsEndpoint,
 		}); err != nil {
 			l.Errorw("error rendering view", zap.Error(err), "service", service)
 			http.Error(w, "could not render view", 500)
@@ -580,52 +601,9 @@ func postReportingHandler(pgDB *gorm.DB, writeBQ securityReportBQWriter) http.Ha
 		bodyStr := buf.String()
 
 		l.Infow("reporting received", "content-type", contentType, "service", service, "user-agent", r.UserAgent())
-		// #region agent log
-		{
-			trimmed := strings.TrimSpace(bodyStr)
-			f, ferr := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if ferr == nil {
-				payload, _ := json.Marshal(map[string]any{
-					"sessionId": "a5526c", "runId": "ingest-debug", "hypothesisId": "A",
-					"location": "main.go:postReportingHandler", "message": "reporting POST received",
-					"data": map[string]any{
-						"service": service, "media": media, "ua": r.UserAgent(),
-						"bodyLen": len(bodyStr), "startsWithArray": strings.HasPrefix(trimmed, "["),
-						"bodyPrefix": trimmed[:min(60, len(trimmed))],
-					},
-					"timestamp": time.Now().UnixMilli(),
-				})
-				_, _ = f.Write(append(payload, '\n'))
-				_ = f.Close()
-			}
-		}
-		// #endregion
-		var reports []*reporting.SecurityReport
-		if media == "application/csp-report" {
-			one, parseErr := reporting.ParseLegacyCSPReport(bodyStr, service)
-			err = parseErr
-			if err == nil {
-				reports = []*reporting.SecurityReport{one}
-			}
-		} else {
-			reports, err = reporting.ParseReports(bodyStr, service)
-		}
+
+		reports, err := reporting.ParsePayload(bodyStr, service)
 		if err != nil {
-			// #region agent log
-			{
-				f, ferr := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-				if ferr == nil {
-					payload, _ := json.Marshal(map[string]any{
-						"sessionId": "a5526c", "runId": "ingest-debug", "hypothesisId": "A",
-						"location": "main.go:postReportingHandler:parseErr", "message": "reporting parse failed",
-						"data":      map[string]any{"service": service, "media": media, "error": err.Error()},
-						"timestamp": time.Now().UnixMilli(),
-					})
-					_, _ = f.Write(append(payload, '\n'))
-					_ = f.Close()
-				}
-			}
-			// #endregion
 			l.Errorw("error on parsing reporting data", zap.Error(err), "service", service, "content-type", contentType, "body", bodyStr)
 			http.Error(w, "uploading error", 500)
 			return
@@ -643,22 +621,6 @@ func postReportingHandler(pgDB *gorm.DB, writeBQ securityReportBQWriter) http.Ha
 				return
 			}
 		}
-
-		// #region agent log
-		{
-			f, ferr := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-			if ferr == nil {
-				payload, _ := json.Marshal(map[string]any{
-					"sessionId": "a5526c", "runId": "post-fix", "hypothesisId": "A",
-					"location": "main.go:postReportingHandler:stored", "message": "reporting stored",
-					"data":      map[string]any{"service": service, "count": len(reports)},
-					"timestamp": time.Now().UnixMilli(),
-				})
-				_, _ = f.Write(append(payload, '\n'))
-				_ = f.Close()
-			}
-		}
-		// #endregion
 
 		w.WriteHeader(http.StatusNoContent)
 

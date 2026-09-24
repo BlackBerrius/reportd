@@ -18,8 +18,8 @@
 
       function sendToAnalytics(metric) {
         const body = JSON.stringify(metric);
-        (navigator.sendBeacon && navigator.sendBeacon('https://reportd.natwelch.com/analytics/reportd', body)) ||
-          fetch('https://reportd.natwelch.com/analytics/reportd', { body, method: 'POST', keepalive: true });
+        (navigator.sendBeacon && navigator.sendBeacon('{{ .AnalyticsEndpoint }}', body)) ||
+          fetch('{{ .AnalyticsEndpoint }}', { body, method: 'POST', keepalive: true });
       }
 
       onCLS(sendToAnalytics);

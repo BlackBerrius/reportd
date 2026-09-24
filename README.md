@@ -44,7 +44,13 @@ reportd is configured via environment variables (prefix `REPORTD_`) or command-l
 | `REPORTD_ANALYTICS_TABLE` | `--analytics_table` | Yes | BigQuery table for Web Vitals |
 | `REPORTD_REPORTS_TABLE` | `--reports_table` | Yes | BigQuery table for Report-To data |
 | `REPORTD_REPORTS_V2_TABLE` | `--reports_v2_table` | No | BigQuery table for Reporting API v1 data |
+| `REPORTD_PUBLIC_URL` | `--public_url` | No | Absolute base URL this instance is reachable at (e.g. `https://reportd.example.com`). Defaults to same-origin relative URLs |
 | `PORT` | -- | No | HTTP port (default: 8080) |
+
+`REPORTD_PUBLIC_URL` only affects the URLs reportd advertises for itself: its own
+`Report-To` / `Reporting-Endpoints` response headers and the dashboard's Web Vitals
+beacon. Leave it unset unless the dashboard is served from a different origin than
+the ingest endpoints.
 
 ### Docker
 

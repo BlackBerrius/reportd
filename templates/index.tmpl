@@ -16,8 +16,8 @@
 
       function sendToAnalytics(metric) {
         const body = JSON.stringify(metric);
-        (navigator.sendBeacon && navigator.sendBeacon('https://reportd.natwelch.com/analytics/resume', body)) ||
-          fetch('https://reportd.natwelch.com/analytics/resume', { body, method: 'POST', keepalive: true });
+        (navigator.sendBeacon && navigator.sendBeacon('{{ .AnalyticsEndpoint }}', body)) ||
+          fetch('{{ .AnalyticsEndpoint }}', { body, method: 'POST', keepalive: true });
       }
 
       onCLS(sendToAnalytics);

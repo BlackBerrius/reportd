@@ -5,38 +5,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 	"time"
 
 	"cloud.google.com/go/bigquery"
 	"cloud.google.com/go/civil"
 )
-
-// #region agent log
-func agentDebugLog(hypothesisID, location, message string, data map[string]any) {
-	f, err := os.OpenFile("/Users/jacek/Documents/Regnology/repos/others/reportd/.cursor/debug-a5526c.log", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	payload := map[string]any{
-		"sessionId":    "a5526c",
-		"runId":        "ingest-debug",
-		"hypothesisId": hypothesisID,
-		"location":     location,
-		"message":      message,
-		"data":         data,
-		"timestamp":    time.Now().UnixMilli(),
-	}
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return
-	}
-	_, _ = f.Write(append(b, '\n'))
-}
-
-// #endregion
 
 // CSPReport is a Content-Security-Policy violation.
 type CSPReport struct {
@@ -255,27 +229,7 @@ type SecurityReport struct {
 //
 // Browsers send a JSON array of reports; use ParseReports for wire payloads.
 func ParseReport(data, srv string) (*SecurityReport, error) {
-	// #region agent log
-	trimmed := strings.TrimSpace(data)
-	startsArray := strings.HasPrefix(trimmed, "[")
-	hasCamelDocURL := strings.Contains(data, `"documentURL"`)
-	hasSnakeDocURI := strings.Contains(data, `"document_uri"`)
-	agentDebugLog("A", "reporting.go:ParseReport:entry", "ParseReport input shape", map[string]any{
-		"service":             srv,
-		"len":                 len(data),
-		"startsWithArray":     startsArray,
-		"hasCamelDocumentURL": hasCamelDocURL,
-		"hasSnakeDocumentURI": hasSnakeDocURI,
-		"prefix":              trimmed[:min(40, len(trimmed))],
-	})
-	// #endregion
-
-	if startsArray {
-		// #region agent log
-		agentDebugLog("A", "reporting.go:ParseReport:arrayRejected", "single-object ParseReport got array; use ParseReports", map[string]any{
-			"service": srv,
-		})
-		// #endregion
+	if strings.HasPrefix(strings.TrimSpace(data), "[") {
 		return nil, fmt.Errorf("expected a single report object, got JSON array")
 	}
 
@@ -289,13 +243,6 @@ func ParseReport(data, srv string) (*SecurityReport, error) {
 	}{}
 
 	if err := json.Unmarshal([]byte(data), &tmp); err != nil {
-		// #region agent log
-		agentDebugLog("A", "reporting.go:ParseReport:unmarshalType", "type-envelope unmarshal failed", map[string]any{
-			"service":         srv,
-			"error":           err.Error(),
-			"startsWithArray": startsArray,
-		})
-		// #endregion
 		return nil, err
 	}
 
@@ -352,16 +299,6 @@ func ParseReport(data, srv string) (*SecurityReport, error) {
 		// Unknown type: preserved in RawJSON.
 	}
 
-	// #region agent log
-	cspDoc := ""
-	if sr.CSP != nil {
-		cspDoc = sr.CSP.Body.DocumentURI
-	}
-	agentDebugLog("B", "reporting.go:ParseReport:ok", "ParseReport succeeded", map[string]any{
-		"service": srv, "type": tmp.Type, "cspDocumentURI": cspDoc,
-	})
-	// #endregion
-
 	return sr, nil
 }
 
@@ -369,13 +306,6 @@ func ParseReport(data, srv string) (*SecurityReport, error) {
 // JSON array of report objects; a single object is also accepted.
 func ParseReports(data, srv string) ([]*SecurityReport, error) {
 	trimmed := strings.TrimSpace(data)
-	// #region agent log
-	agentDebugLog("A", "reporting.go:ParseReports:entry", "ParseReports input shape", map[string]any{
-		"service":         srv,
-		"len":             len(data),
-		"startsWithArray": strings.HasPrefix(trimmed, "["),
-	})
-	// #endregion
 
 	if strings.HasPrefix(trimmed, "[") {
 		var items []json.RawMessage
@@ -390,11 +320,6 @@ func ParseReports(data, srv string) ([]*SecurityReport, error) {
 			}
 			out = append(out, sr)
 		}
-		// #region agent log
-		agentDebugLog("A", "reporting.go:ParseReports:arrayOK", "parsed report array", map[string]any{
-			"service": srv, "count": len(out),
-		})
-		// #endregion
 		return out, nil
 	}
 
@@ -405,9 +330,47 @@ func ParseReports(data, srv string) ([]*SecurityReport, error) {
 	return []*SecurityReport{sr}, nil
 }
 
+// ParsePayload decodes a reporting endpoint payload in whichever wire
+// format the browser used. Content-Type is not a reliable discriminator —
+// Safari posts application/csp-report with a Reporting API body — so the
+// format is detected from the payload itself.
+func ParsePayload(data, srv string) ([]*SecurityReport, error) {
+	if IsLegacyCSPReport(data) {
+		sr, err := ParseLegacyCSPReport(data, srv)
+		if err != nil {
+			return nil, err
+		}
+		return []*SecurityReport{sr}, nil
+	}
+
+	reports, err := ParseReports(data, srv)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, sr := range reports {
+		if sr.ReportType.StringVal == "" {
+			return nil, fmt.Errorf("payload is neither a csp-report envelope nor a typed report")
+		}
+	}
+
+	return reports, nil
+}
+
+// IsLegacyCSPReport reports whether data is a legacy
+// {"csp-report": {...}} payload.
+func IsLegacyCSPReport(data string) bool {
+	var probe struct {
+		CSPReport json.RawMessage `json:"csp-report"`
+	}
+	if err := json.Unmarshal([]byte(data), &probe); err != nil {
+		return false
+	}
+	return len(probe.CSPReport) > 0
+}
+
 // ParseLegacyCSPReport decodes a legacy application/csp-report payload
-// into a SecurityReport; Safari sends this format even to
-// Reporting-Endpoints URLs. Legacy-only fields stay in RawJSON.
+// into a SecurityReport. Legacy-only fields stay in RawJSON.
 func ParseLegacyCSPReport(data, srv string) (*SecurityReport, error) {
 	// Kebab-case wire format; mirrors reportto.CSPReport.
 	var wrapper struct {

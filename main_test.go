@@ -76,7 +76,7 @@ func newTestRouter(t *testing.T) (http.Handler, *gorm.DB, *recordingWriters) {
 		t.Fatalf("db.AutoMigrate: %v", err)
 	}
 	rec := newRecordingWriters()
-	router := newRouter(pgDB, rec.writeReport, rec.writeAnalytics, rec.writeSecurityReport)
+	router := newRouter(pgDB, "", rec.writeReport, rec.writeAnalytics, rec.writeSecurityReport)
 	return router, pgDB, rec
 }
 
@@ -544,6 +544,39 @@ func TestPostReportingHandlerLegacyCSP(t *testing.T) {
 	}
 }
 
+// Safari 26 posts Content-Type application/csp-report with a Reporting API
+// body, which the legacy parser rejected as "missing csp-report key".
+func TestPostReportingHandlerSafariReportingAPIBody(t *testing.T) {
+	h, pgDB, _ := newTestRouter(t)
+
+	body := `{"type":"csp-violation","url":"https://example.com/connect/login","body":{"documentURL":"https://example.com/connect/login","disposition":"report","referrer":"https://example.com/app/application","effectiveDirective":"style-src-elem","blockedURL":"inline","originalPolicy":"default-src 'self'","statusCode":200,"sample":"","sourceFile":"https://example.com/app.js","lineNumber":60,"columnNumber":22}}`
+	rr := do(t, h, http.MethodPost, "/reporting/svc", strings.NewReader(body), "application/csp-report")
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("safari body: status = %d, want 204, body=%s", rr.Code, rr.Body.String())
+	}
+
+	var entries []db.SecurityReportEntry
+	if err := pgDB.Where("service = ?", "svc").Find(&entries).Error; err != nil {
+		t.Fatalf("find: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("expected 1 security report row, got %d", len(entries))
+	}
+	e := entries[0]
+	if e.ReportType != "csp-violation" {
+		t.Errorf("report_type = %q, want csp-violation", e.ReportType)
+	}
+	if e.DocumentURI != "https://example.com/connect/login" {
+		t.Errorf("document_uri = %q, want the camelCase documentURL value", e.DocumentURI)
+	}
+	if e.EffectiveDirective != "style-src-elem" {
+		t.Errorf("effective_directive = %q, want style-src-elem", e.EffectiveDirective)
+	}
+	if e.BlockedURI != "inline" {
+		t.Errorf("blocked_uri = %q, want inline", e.BlockedURI)
+	}
+}
+
 func TestPostReportingHandlerContentTypes(t *testing.T) {
 	h, _, _ := newTestRouter(t)
 
@@ -594,5 +627,50 @@ func TestRouteTagMiddleware(t *testing.T) {
 	}
 	if rr.Header().Get("reporting-endpoints") == "" {
 		t.Error("reporting-endpoints header should be set on every response")
+	}
+}
+
+// The endpoints reportd advertises for itself must follow the deployment, not
+// a domain baked into the binary.
+func TestSelfReportingEndpointsFollowPublicURL(t *testing.T) {
+	for _, tt := range []struct {
+		name               string
+		publicURL          string
+		wantReportTo       string
+		wantReportingPoint string
+	}{
+		{
+			name:               "unset uses same-origin paths",
+			publicURL:          "",
+			wantReportTo:       `{"group":"default","max_age":10886400,"endpoints":[{"url":"/report/reportd"}]}`,
+			wantReportingPoint: `default="/reporting/reportd"`,
+		},
+		{
+			name:               "configured base URL is absolute",
+			publicURL:          "https://reportd.example.com/",
+			wantReportTo:       `{"group":"default","max_age":10886400,"endpoints":[{"url":"https://reportd.example.com/report/reportd"}]}`,
+			wantReportingPoint: `default="https://reportd.example.com/reporting/reportd"`,
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			pgDB, err := db.Connect(ctx, "sqlite://"+filepath.Join(t.TempDir(), "reportd.db"))
+			if err != nil {
+				t.Fatalf("db.Connect: %v", err)
+			}
+			if err := db.AutoMigrate(ctx, pgDB); err != nil {
+				t.Fatalf("db.AutoMigrate: %v", err)
+			}
+			rec := newRecordingWriters()
+			h := newRouter(pgDB, tt.publicURL, rec.writeReport, rec.writeAnalytics, rec.writeSecurityReport)
+
+			rr := do(t, h, http.MethodGet, "/healthz", nil, "")
+			if got := rr.Header().Get("report-to"); got != tt.wantReportTo {
+				t.Errorf("report-to = %s, want %s", got, tt.wantReportTo)
+			}
+			if got := rr.Header().Get("reporting-endpoints"); got != tt.wantReportingPoint {
+				t.Errorf("reporting-endpoints = %s, want %s", got, tt.wantReportingPoint)
+			}
+		})
 	}
 }
