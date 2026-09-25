@@ -175,6 +175,13 @@ func TestCorsPreflightHandler(t *testing.T) {
 		t.Errorf("valid analytics options: status = %d, want 200", rr.Code)
 	}
 
+	// Chromium and Firefox preflight the Reporting API delivery; a 405
+	// here makes them drop the report before it is ever sent.
+	rr = do(t, h, http.MethodOptions, "/reporting/svc", nil, "")
+	if rr.Code != http.StatusOK {
+		t.Errorf("valid reporting options: status = %d, want 200", rr.Code)
+	}
+
 	rr = do(t, h, http.MethodOptions, "/report/bad.service", nil, "")
 	if rr.Code != http.StatusBadRequest {
 		t.Errorf("invalid service: status = %d, want 400", rr.Code)

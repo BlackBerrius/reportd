@@ -286,6 +286,7 @@ func newRouter(pgDB *gorm.DB, publicURL string, writeReport reportToBQWriter, wr
 
 	r.Options("/report/{service}", corsPreflightHandler())
 	r.Options("/analytics/{service}", corsPreflightHandler())
+	r.Options("/reporting/{service}", corsPreflightHandler())
 
 	r.Get("/reports/{service}", getReportsHandler(pgDB))
 	r.Post("/report/{service}", postReportHandler(pgDB, writeReport))
